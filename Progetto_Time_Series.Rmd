@@ -1,0 +1,447 @@
+---
+title: "Time Series Analysis of registered cars"
+author: "Saverio Fontana"
+date: "2024-03-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(expsmooth)
+library(fpp)
+library(forecast)
+library(rugarch)
+library(boot)
+library(fGarch)
+library(TTR)
+library(AER)
+library(tseries)
+library(fUnitRoots)
+library(openxlsx)
+library(readxl)
+library(plm)
+library(ggplot2)
+library(quantmod);
+library(fBasics);
+require(TSA);require(forecast);require(tseries)
+library (fpp2)
+library(vars)
+library(coefplot)
+library(rugarch)
+```
+# LOAD DATA
+```{r}
+data<-read.csv("auto.csv", header= TRUE)
+```
+
+The missing values are the first 22 obs, so we delete them
+```{r}
+data <- data[-(1:22),]
+```
+
+# FIRST ANALYSIS 
+## Time Series plot
+Now we create a time series object and plot it
+```{r}
+Ita_ts <- ts(data$Italy, start = c(1990, 1), 
+              end = c(2024, 2), frequency =12) 
+plot(Ita_ts)
+```
+
+As we can see, there is a strong stagional component and a structural break around March 2020 (due to the Covid epidemy)
+
+## Stationarity Test
+```{r}
+ kpss.test(Ita_ts)
+adf.test(Ita_ts)
+
+```
+Even if the ADF-Test can suggest stationarity for certain values of alfa, the KPPS suggests that the series is non stationary.
+
+## Correlation plots
+```{r}
+acf(Ita_ts) 
+pacf(Ita_ts)
+```
+
+## Ljung-Box Test for autocorrelation
+```{r}
+Box.test(Ita_ts, lag = 12, type = "Ljung-Box")
+```
+So there is autocorrelation
+
+# DECOMPOSITION
+## Using simple decomposition function
+```{r}
+dec<-decompose(Ita_ts)
+plot(dec)
+```
+
+
+## Alternative method with MA
+
+We calculate the series trend by using a moving average smoother. The order of the smoother should be derived from the frequency of the series. The general rule of thumb is to use two sides moving average with an order of frequency / 2. For example, in the case, as the frequency is monthly or 12, we will use two sides moving average, where each side is 6 consecutive observations.  This means that for calculating the smoothed value of the t observation - we will average the t observation along with the previous and following 6 observations (i.e., averaging 13 data points).
+
+```{r}
+library(plotly)
+library(dplyr)
+library(lubridate)
+library(TSstudio)
+smooth <- ts_ma(Ita_ts, n = 6,
+                   separate = FALSE)
+```
+
+Let’s plot the series with the trend estimation:
+```{r}
+smooth$plot %>%
+  layout(legend = list(x = 0.1, y = 0.9))
+```
+
+Next step, we will convert the series and smoothed trend into a dataframe object with the ts_to_prophet function and merge the two series:
+
+```{r}
+df <- ts_to_prophet(Ita_ts) %>% 
+  select(date = ds, y) %>% 
+  left_join(ts_to_prophet(smooth$ma_6) %>%
+              select(date = ds, trend = y), by = "date")
+
+
+head(df, 8)
+```
+
+*Note:* the cost of using the moving average for trend estimation is lost of the first and last n observation. Where n is the order of the moving average, in this case, is the first and last 6 observations.
+
+
+
+
+Next, we will remove the trend from the series by subtracting the trend estimation from the series:
+
+```{r}
+df$detrend <- df$y - df$trend
+
+head(df, 8)
+```
+
+And plot
+```{r}
+ts_plot(df,
+        title = "Car Registration Detrending") %>%
+  layout(legend = list(x = 0.1, y = 0.9))
+```
+
+
+
+
+
+
+We can now overlap in a plot the various years:
+```{r}
+df$year <- year(df$date)
+df$month <- month(df$date)
+```
+
+
+
+
+
+```{r}
+p <- plot_ly()
+for(i in unique(df$year)){
+  temp <- NULL
+  temp <- df %>% filter(year == i) 
+  p <- p %>% add_lines(x = temp$month,
+                       y = temp$detrend,
+                       name = i)
+  
+}
+
+p
+```
+
+
+Now, let’s calculate the seasonal component and add it to the seasonal plot above:
+
+
+```{r}
+seasonal_comp <- df %>% 
+  group_by(month) %>%
+  summarise(month_avg = mean(detrend, na.rm = TRUE),
+            .groups = "drop")
+  
+
+p %>% add_lines(x = seasonal_comp$month, 
+                y = seasonal_comp$month_avg,
+                line = list(color = "black", dash = "dash", width = 4),
+                name = "Seasonal Component")
+```
+
+
+
+
+
+To calculate the irregular component, we will have to merge the seasonal component back to then to subtract from the series the estimated trend and seasonal components:
+
+
+```{r}
+df <- df %>% left_join(seasonal_comp, by = "month")
+
+
+df$irregular <- df$y - df$trend - df$month_avg
+head(df)
+```
+```{r}
+ts_plot(df[, c("date", "y" ,"trend", "detrend", "month_avg", "irregular")], 
+        title = "Car Registration and its Components",
+        type = "multiple")
+```
+
+
+
+
+
+
+
+
+# FORECASTING
+## Naive model 1
+Naive model using the mean of the model 
+
+```{r}
+avg_model <- Arima(Ita_ts, c(0,0,0))
+avg_forecast <- forecast(avg_model)
+avg_forecast
+plot(avg_forecast)
+avg_forecast$mean
+```
+
+## Naive model 2
+Naive model using a RW
+```{r}
+RW<-naive(Ita_ts,50)
+RW
+plot(RW)
+
+```
+
+## Naive model 3
+Naive model using RW with drift
+```{r}
+RWD<-rwf(Ita_ts,50, drift = TRUE)
+RWD
+plot(RWD)
+```
+
+## Exponential Smoothing
+```{r}
+fit <- ets(Ita_ts)
+forecast<-forecast(fit)
+forecast
+plot(forecast)
+summary(fit)
+```
+
+## Exponential Smoothing Holt and Winters
+```{r}
+s.exp1          <- HoltWinters(Ita_ts, alpha = 0.1, beta=FALSE, gamma=FALSE, l.start=23.56)
+s.exp7          <- HoltWinters(Ita_ts, alpha = 0.7, beta=FALSE, gamma=FALSE, l.start=23.56)
+s.exp.estimated <- HoltWinters(Ita_ts)
+
+s.exp.estimated$alpha 
+forecast(s.exp.estimated)
+plot(s.exp.estimated)
+s.exp.estimated$SSE
+```
+
+# ARIMA
+As a rule of thumb, the ets models are not stationary, and are used mostly when there is a trend and/or seasonality in the data, as this model explicitly these components.  
+On the other hand, ARIMA models should be transformed in stationary and should be used when if you see autocorrelation in the data, i.e. the past data explains the present data well
+
+## SARIMA fit
+```{r}
+miarma=auto.arima(Ita_ts)
+summary(miarma)
+```
+```{r}
+checkresiduals(miarma)
+```
+We have a MAPE of 14.5 %, not bad, but hopefully we can do better. 
+
+Test of normality for the residuals
+```{r}
+shapiro.test(miarma$residuals)
+```
+We reject the hypotesis of normality of the residuals, this can generate problems in the forecast.
+
+Plot the residuals to check for autocorrelation
+```{r}
+plot(miarma$residuals)
+acf(miarma$residuals)
+```
+No autocorrelation 
+
+
+
+Let's make forecast
+```{r}
+l.forecast <- forecast(miarma)
+plot(l.forecast)
+```
+
+
+## SARIMA model with log transformation
+```{r}
+miarma2=auto.arima(log(Ita_ts))
+summary(miarma2)
+```
+```{r}
+checkresiduals(miarma2)
+```
+
+
+Test of normality for the residuals
+```{r}
+shapiro.test(miarma2$residuals)
+```
+
+Plot the residuals to check for autocorrelation
+```{r}
+plot(miarma2$residuals)
+acf(miarma2$residuals)
+```
+
+Let's make forecast
+```{r}
+l.forecast2 <- forecast(miarma2)
+plot(l.forecast2)
+```
+
+
+Try to create a VAR model using all of the nations
+
+```{r}
+
+data2 <- data[-(1:12),]
+data_ts<- ts(data2[,c(6,7,11,12,14,19)], start = c(1990, 1), 
+        end = c(2024, 2), frequency =12) 
+sum(is.na(data_ts))
+
+plot(data_ts)
+
+Var_model <- VAR(data_ts, lag.max =12)
+```
+
+
+Chosen order:
+```{r}
+Var_model$p
+```
+
+
+
+Each model is like an lm object with its own coefficients and residuals:
+```{r}
+residuals(Var_model$varresult$Italy)
+```
+
+
+
+
+
+
+
+Predictions
+
+```{r}
+predict(Var_model)
+```
+
+
+The predictions are not that good, we were expecting that: the residuals are high and coefficients low. 
+So: The countries cannot explain each others' behavior.
+
+
+
+
+
+
+#ARIMAX
+```{r}
+#Import time series about gas prices 
+carburanti<-read.csv("Carburanti.csv", header= TRUE)
+Benzina_ts <- ts(carburanti$Benzina, start = c(1996, 1), 
+             end = c(2024, 2), frequency =12) 
+plot(Benzina_ts)
+plot(diff(Benzina_ts))
+
+
+
+#To use ARIMAX we need both series to be stationary 
+adf.test(Ita_ts)
+adf.test(Benzina_ts)
+
+```
+```{r}
+#Create the same window to have the series at the same lenght
+Ita_ts_modify <- window(Ita_ts, start=c(1996,1))
+
+fit2 <- auto.arima(Ita_ts_modify, xreg=Benzina_ts)
+summary(fit2)
+checkresiduals(fit2)
+```
+
+
+
+We try with to differentiate Gasoline price and fit it into the ARIMA model
+
+```{r}
+d_Benzina_ts<-diff(Benzina_ts)
+adf.test(d_Benzina_ts)
+
+#Change the window by one month (we lose an obs because we differentiate)
+Ita_ts_modify2 <- window(Ita_ts, start=c(1996,2))
+
+#Fit the model
+fit <- auto.arima(Ita_ts_modify2, xreg=d_Benzina_ts)
+summary(fit)
+checkresiduals(fit)
+```
+
+
+We create dummy variable to handle the structural break of Covid 
+
+```{r}
+dates <- as.Date(time(Ita_ts_modify), origin = "1970-01-01")
+
+# Creation of time series with a dummy variable
+dummy <- ifelse(dates == as.Date("2020-03-01"), 1, 0)
+
+dummy_ts <- ts(dummy, start = c(1996, 1), frequency = 12)
+```
+
+
+Then we merge in a unique object ts to use it as a regressor
+```{r}
+
+x_ts <- cbind(dummy_ts, Benzina_ts)
+
+fit <- auto.arima(Ita_ts_modify, xreg= x_ts)
+summary(fit) 
+```
+I  don't think things are better than the normal ARIMA
+
+
+
+
+
+#let's take again the various countries
+```{r}
+data_ts <-window (data_ts, start=c(1990,1))
+Ita_ts2 <- window (Ita_ts, start=c(1990,1))
+
+fit <- auto.arima(Ita_ts2, xreg= data_ts)
+```
+The MAPE is reduced.
+
+
+
