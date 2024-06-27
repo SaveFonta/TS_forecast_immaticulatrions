@@ -38,7 +38,7 @@ The ARIMAX model was the most accurate in terms of MAPE, but other models like A
 - `auto.xlsx`: Contains the time series data for car registrations up to February 2024.
 - `Carburanti.xlsx`: Contains gasoline prices used as regressors in the ARIMAX model.
 - `Progetto_Time_Series.Rmd`: The main script for running the different forecasting models (it is an RMarkdown file)
-- 'Progetto_Time_Series.html': the output of the code and the final project
+- 'Progetto_Time_Series.html' : the output of the code and the final project
 
 ## Usage
 
