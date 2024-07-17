@@ -51,6 +51,13 @@ plot(Ita_ts)
 
 As we can see, there is a strong stagional component and a structural break around March 2020 (due to the Covid epidemy)
 
+I found this package to plot interactive time series, let's try it
+```{r}
+library(dygraphs)
+dygraph(Ita_ts)  %>% dyRangeSelector()
+
+```
+
 ## Stationarity Test
 ```{r}
  kpss.test(Ita_ts)
